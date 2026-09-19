@@ -1,0 +1,10 @@
+meta:
+  environment: python
+  toolchain:
+    name: pip
+    version: 3.11
+run:
+  command: python server.py
+  persistence:
+    - /data
+    - /uploads
