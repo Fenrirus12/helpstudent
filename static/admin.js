@@ -23,6 +23,7 @@ const taskTypeFilter = document.querySelector("#task-type-filter");
 const reviewStatusFilter = document.querySelector("#review-status-filter");
 const counterNode = document.querySelector("#admin-counter");
 let pendingWorkAttachment = null;
+let workAttachmentRead = null;
 
 function setAdminStatus(message, isError = false) {
   if (!statusNode) {
@@ -159,12 +160,14 @@ function renderRequests(items) {
       <div class="request-details">
         <span>Описание</span>
         <p>${escapeHtml(item.details).replaceAll("\n", "<br>")}</p>
-        ${item.attachment?.path ? `
-          <a class="chat-attachment" href="${escapeHtml(item.attachment.path)}" target="_blank" rel="noopener noreferrer">
-            <span>Вложение</span>
-            <strong>${escapeHtml(item.attachment.name)}</strong>
-          </a>
-        ` : ""}
+        ${(Array.isArray(item.attachments) ? item.attachments : (item.attachment ? [item.attachment] : []))
+          .filter((attachment) => attachment?.path)
+          .map((attachment) => `
+            <a class="chat-attachment" href="${escapeHtml(attachment.path)}" target="_blank" rel="noopener noreferrer">
+              <span>Вложение</span>
+              <strong>${escapeHtml(attachment.name)}</strong>
+            </a>
+          `).join("")}
       </div>
     `;
     requestList.appendChild(card);
@@ -249,7 +252,7 @@ function renderAdminWorks(items) {
           <span>${escapeHtml(item.workType)} · ${escapeHtml(item.subject)}</span>
         </div>
         <span class="review-status ${item.published ? "review-status-approved" : "review-status-pending"}">
-          ${item.published ? "published" : "draft"}
+          ${item.published ? "Опубликовано" : "Черновик"}
         </span>
       </div>
       <div class="request-grid">
@@ -267,6 +270,9 @@ function renderAdminWorks(items) {
         ` : ""}
       </div>
       <div class="admin-actions review-actions">
+        <button class="button ${item.published ? "button-secondary" : "button-primary"} work-publish" type="button" data-work-id="${escapeHtml(item.id)}">
+          ${item.published ? "Снять с публикации" : "Опубликовать на сайте"}
+        </button>
         <button class="button button-secondary work-edit" type="button" data-work-id="${escapeHtml(item.id)}">Редактировать</button>
         <button class="button button-danger work-delete" type="button" data-work-id="${escapeHtml(item.id)}">Удалить</button>
       </div>
@@ -436,7 +442,7 @@ function getWorkPayload() {
     originality: String(formData.get("originality") || "").trim(),
     tags: String(formData.get("tags") || "").trim(),
     description: String(formData.get("description") || "").trim(),
-    published: Boolean(formData.get("published")),
+    published: formData.get("published") === "on",
   };
   if (pendingWorkAttachment) {
     payload.attachment = pendingWorkAttachment;
@@ -475,6 +481,7 @@ function resetWorkForm() {
   }
   workAdminForm.reset();
   pendingWorkAttachment = null;
+  workAttachmentRead = null;
   if (workFileInput instanceof HTMLInputElement) {
     workFileInput.value = "";
   }
@@ -507,6 +514,7 @@ function fillWorkForm(item) {
     publishedInput.checked = Boolean(item.published);
   }
   pendingWorkAttachment = null;
+  workAttachmentRead = null;
   if (workFileInput instanceof HTMLInputElement) {
     workFileInput.value = "";
   }
@@ -524,6 +532,15 @@ async function saveWork() {
   }
   const idInput = workAdminForm.querySelector('input[name="id"]');
   const workId = idInput instanceof HTMLInputElement ? idInput.value.trim() : "";
+  try {
+    if (workAttachmentRead) {
+      setAdminStatus("Подготавливаю файл и сохраняю работу...");
+      pendingWorkAttachment = await workAttachmentRead;
+    }
+  } catch (error) {
+    setAdminStatus(error instanceof Error ? error.message : "Не удалось прочитать файл.", true);
+    return;
+  }
   const payload = getWorkPayload();
   setAdminStatus(workId ? `Сохраняю работу #${workId}...` : "Добавляю работу...");
   try {
@@ -552,6 +569,37 @@ async function deleteWork(workId) {
     await loadAdminWorks();
   } catch (error) {
     setAdminStatus(error instanceof Error ? error.message : "Ошибка удаления работы.", true);
+  }
+}
+
+async function toggleWorkPublication(card) {
+  let item;
+  try {
+    item = JSON.parse(card.dataset.workPayload || "{}");
+  } catch (error) {
+    setAdminStatus("Не удалось прочитать данные работы.", true);
+    return;
+  }
+  const nextPublished = !Boolean(item.published);
+  setAdminStatus(nextPublished ? "Публикую работу на сайте..." : "Снимаю работу с публикации...");
+  try {
+    await fetchAdminJson(`/api/admin/works/${item.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: item.title,
+        workType: item.workType,
+        subject: item.subject,
+        originality: item.originality || "",
+        tags: item.tags || "",
+        description: item.description,
+        published: nextPublished,
+      }),
+    });
+    setAdminStatus(nextPublished ? "Работа опубликована на сайте." : "Работа снята с публикации.");
+    await loadAdminWorks();
+  } catch (error) {
+    setAdminStatus(error instanceof Error ? error.message : "Не удалось изменить публикацию.", true);
   }
 }
 
@@ -640,6 +688,7 @@ workFileInput?.addEventListener("change", async () => {
   const file = workFileInput.files?.[0] || null;
   if (!file) {
     pendingWorkAttachment = null;
+    workAttachmentRead = null;
     if (workAttachmentName) {
       workAttachmentName.textContent = attachmentLabel(null);
     }
@@ -649,12 +698,21 @@ workFileInput?.addEventListener("change", async () => {
     workAttachmentName.textContent = "Подготавливаю файл...";
   }
   try {
-    pendingWorkAttachment = await fileToBase64(file);
+    if (file.size > 5 * 1024 * 1024) {
+      throw new Error("Файл должен быть не больше 5 МБ.");
+    }
+    workAttachmentRead = fileToBase64(file);
+    const attachment = await workAttachmentRead;
+    if (workFileInput?.files?.[0] !== file) {
+      return;
+    }
+    pendingWorkAttachment = attachment;
     if (workAttachmentName) {
       workAttachmentName.textContent = attachmentLabel(file);
     }
     setAdminStatus("");
   } catch (error) {
+    workAttachmentRead = null;
     pendingWorkAttachment = null;
     workFileInput.value = "";
     if (workAttachmentName) {
@@ -747,6 +805,11 @@ if (workAdminList) {
       } catch (error) {
         setAdminStatus("Не удалось открыть работу для редактирования.", true);
       }
+      return;
+    }
+    const publishButton = target.closest(".work-publish");
+    if (publishButton) {
+      toggleWorkPublication(card);
       return;
     }
     const deleteButton = target.closest(".work-delete");

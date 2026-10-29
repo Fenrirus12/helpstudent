@@ -13,7 +13,7 @@ class Settings:
     data_dir: Path
     uploads_dir: Path
     database_path: Path
-    max_request_size: int = 8 * 1024 * 1024
+    max_request_size: int = 36 * 1024 * 1024
     max_attachment_size: int = 5 * 1024 * 1024
     admin_username: str = "admin"
     admin_password: str = "change-me-please"

@@ -18,6 +18,8 @@ from studhelp.storage import Storage
 
 
 ROOT_DIR = Path(__file__).resolve().parent
+MAX_REQUEST_ATTACHMENTS = 10
+MAX_REQUEST_ATTACHMENTS_SIZE = 25 * 1024 * 1024
 
 
 class Application:
@@ -307,19 +309,43 @@ def create_handler(app: Application):
                 if auth_result is None:
                     return
                 user, token = auth_result
-                attachment_payload = payload.pop("attachment", None)
-                attachment = None
-                if isinstance(attachment_payload, dict) and attachment_payload.get("contentBase64"):
-                    try:
-                        attachment = app.chat.store_attachment(attachment_payload)
-                    except Exception as error:
-                        self._send_json({"ok": False, "message": str(error)}, status=HTTPStatus.BAD_REQUEST)
-                        return
+                attachment_payloads = payload.pop("attachments", None)
+                legacy_attachment = payload.pop("attachment", None)
+                if attachment_payloads is None:
+                    attachment_payloads = [legacy_attachment] if isinstance(legacy_attachment, dict) and legacy_attachment.get("contentBase64") else []
+                if not isinstance(attachment_payloads, list) or len(attachment_payloads) > MAX_REQUEST_ATTACHMENTS:
+                    self._send_json({"ok": False, "message": "Можно приложить не больше 10 файлов."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                if any(not isinstance(item, dict) or not isinstance(item.get("contentBase64"), str) for item in attachment_payloads):
+                    self._send_json({"ok": False, "message": "Не удалось прочитать один из прикреплённых файлов."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                encoded_size_limit = ((MAX_REQUEST_ATTACHMENTS_SIZE + 2) // 3) * 4
+                if sum(len(item["contentBase64"]) for item in attachment_payloads) > encoded_size_limit:
+                    self._send_json({"ok": False, "message": "Общий размер файлов не должен превышать 25 МБ."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                attachments = []
+                try:
+                    for attachment_payload in attachment_payloads:
+                        attachments.append(app.chat.store_attachment(attachment_payload))
+                    if sum(item.get("size", 0) for item in attachments) > MAX_REQUEST_ATTACHMENTS_SIZE:
+                        raise ValueError("Общий размер файлов не должен превышать 25 МБ.")
+                except Exception as error:
+                    for attachment in attachments:
+                        stored_name = Path(attachment.get("path", "")).name
+                        stored_path = (app.settings.uploads_dir / stored_name).resolve()
+                        if stored_path.parent == app.settings.uploads_dir.resolve() and stored_path.exists():
+                            stored_path.unlink()
+                    self._send_json({"ok": False, "message": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
                 payload["userId"] = user["id"]
-                if attachment:
-                    payload["attachment"] = attachment
+                if attachments:
+                    payload["attachments"] = attachments
+                    payload["attachment"] = attachments[0]
                 record = app.reviews.save_request(payload)
-                app.storage.create_message(int(user["id"]), "user", self._format_request_message(record), attachment)
+                first_attachment = attachments[0] if attachments else None
+                app.storage.create_message(int(user["id"]), "user", self._format_request_message(record), first_attachment)
+                for attachment in attachments[1:]:
+                    app.storage.create_message(int(user["id"]), "user", f"Файл к заявке #{record['id']}", attachment)
                 headers = {"Set-Cookie": self._build_session_cookie(token)} if token else None
                 self._send_json(
                     {

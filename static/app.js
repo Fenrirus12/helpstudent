@@ -5,8 +5,12 @@ const faqItems = document.querySelectorAll(".faq-item");
 const requestForm = document.querySelector("#request-form");
 const requestStatusBox = document.querySelector("#form-status");
 const requestAuthBox = document.querySelector("#request-auth-box");
+const requestActionButton = document.querySelector("#request-action-button");
+const requestAuthModeToggle = document.querySelector("#request-auth-mode-toggle");
+const requestAuthHelp = document.querySelector("#request-auth-help");
+const requestAuthNameLabel = document.querySelector("#request-auth-name-label");
 const requestFileInput = document.querySelector("#request-file-input");
-const requestAttachmentName = document.querySelector("#request-attachment-name");
+const requestAttachmentsList = document.querySelector("#request-attachments-list");
 const reviewForm = document.querySelector("#review-form");
 const reviewStatusBox = document.querySelector("#review-status");
 const reviewsList = document.querySelector("#reviews-list");
@@ -32,7 +36,11 @@ const profileMenu = document.querySelector("#profile-menu");
 const openChangePasswordButton = document.querySelector("#open-change-password-button");
 const logoutButton = document.querySelector("#logout-button");
 let currentUser = null;
-let pendingRequestAttachment = null;
+let selectedRequestFiles = [];
+let nextRequestFileId = 1;
+const maxRequestFileCount = 10;
+const maxRequestFileSize = 5 * 1024 * 1024;
+const maxRequestFilesSize = 25 * 1024 * 1024;
 
 if (menuToggle && siteNav) {
   menuToggle.addEventListener("click", () => {
@@ -85,8 +93,19 @@ function syncHeaderAuth(user) {
   headerSession?.classList.toggle("is-hidden", !isAuthorized);
   requestAuthBox?.classList.toggle("is-hidden", isAuthorized);
   requestAuthBox?.querySelectorAll("input").forEach((input) => {
-    input.required = !isAuthorized;
+    input.required = !isAuthorized && (input.name !== "authName" || requestAuthBox?.dataset.authMode !== "login");
   });
+  requestForm?.querySelectorAll("[name=\"name\"], [name=\"contact\"], [name=\"taskType\"], [name=\"antiPlagiarism\"], [name=\"deadline\"], [name=\"attachmentFile\"], [name=\"details\"]").forEach((field) => {
+    if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement) {
+      field.disabled = !isAuthorized;
+    }
+  });
+  if (requestActionButton) {
+    requestActionButton.type = isAuthorized ? "submit" : "button";
+    requestActionButton.textContent = isAuthorized ? "Отправить заявку и перейти в чат" : (requestAuthBox?.dataset.authMode === "login" ? "Войти" : "Создать аккаунт");
+  }
+  requestAuthModeToggle?.classList.toggle("is-hidden", isAuthorized);
+  requestAuthNameLabel?.classList.toggle("is-hidden", isAuthorized || requestAuthBox?.dataset.authMode === "login");
   if (headerSessionName) {
     headerSessionName.textContent = user?.name || "Пользователь";
   }
@@ -95,6 +114,80 @@ function syncHeaderAuth(user) {
     profileAvatar.textContent = initial;
   }
 }
+
+function setRequestAuthMode(mode) {
+  if (!requestAuthBox) {
+    return;
+  }
+  const isLogin = mode === "login";
+  requestAuthBox.dataset.authMode = isLogin ? "login" : "register";
+  if (requestAuthHelp) {
+    requestAuthHelp.textContent = isLogin
+      ? "Войдите в аккаунт, чтобы сохранить заявку и продолжить общение в чате."
+      : "Создайте аккаунт, чтобы сохранить заявку и продолжить общение в чате.";
+  }
+  if (requestActionButton && !currentUser) {
+    requestActionButton.textContent = isLogin ? "Войти" : "Создать аккаунт";
+  }
+  if (requestAuthModeToggle) {
+    requestAuthModeToggle.textContent = isLogin ? "Нет аккаунта? Создать" : "Уже есть аккаунт? Войти";
+  }
+  if (requestAuthNameLabel) {
+    requestAuthNameLabel.classList.toggle("is-hidden", isLogin);
+    requestAuthNameLabel.hidden = isLogin;
+  }
+  const authNameInput = requestAuthBox.querySelector('[name="authName"]');
+  if (authNameInput instanceof HTMLInputElement) {
+    authNameInput.required = !isLogin;
+    authNameInput.disabled = isLogin;
+  }
+}
+
+requestAuthModeToggle?.addEventListener("click", () => {
+  setRequestAuthMode(requestAuthBox?.dataset.authMode === "login" ? "register" : "login");
+  setStatus(requestStatusBox, "");
+});
+
+requestActionButton?.addEventListener("click", async () => {
+  if (currentUser) {
+    return;
+  }
+  if (!(requestForm instanceof HTMLFormElement)) {
+    return;
+  }
+  const emailInput = requestForm.querySelector('[name="authEmail"]');
+  const passwordInput = requestForm.querySelector('[name="authPassword"]');
+  const nameInput = requestForm.querySelector('[name="authName"]');
+  const email = emailInput instanceof HTMLInputElement ? emailInput.value.trim() : "";
+  const password = passwordInput instanceof HTMLInputElement ? passwordInput.value : "";
+  const name = nameInput instanceof HTMLInputElement ? nameInput.value.trim() : "";
+  const mode = requestAuthBox?.dataset.authMode || "register";
+  if (!email || !password || (mode === "register" && !name)) {
+    setStatus(requestStatusBox, mode === "register"
+      ? "Укажите имя, электронную почту и пароль для аккаунта."
+      : "Укажите электронную почту и пароль.", true);
+    return;
+  }
+  requestActionButton.disabled = true;
+  setStatus(requestStatusBox, mode === "login" ? "Выполняю вход..." : "Создаю аккаунт...");
+  try {
+    const result = await fetchJson(mode === "login" ? "/api/auth/login" : "/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, email, password }),
+    });
+    const requestNameInput = requestForm.querySelector('[name="name"]');
+    if (requestNameInput instanceof HTMLInputElement) {
+      requestNameInput.value = mode === "register" ? name : (result.user?.name || "");
+    }
+    syncHeaderAuth(result.user || null);
+    setStatus(requestStatusBox, "Вы вошли. Заполните заявку и нажмите кнопку отправки — откроется чат.");
+  } catch (error) {
+    setStatus(requestStatusBox, error instanceof Error ? error.message : "Не удалось выполнить вход.", true);
+  } finally {
+    requestActionButton.disabled = false;
+  }
+});
 
 function toggleProfileMenu(forceOpen) {
   if (!profileMenu || !profileToggleButton) {
@@ -225,14 +318,6 @@ async function restoreUserSession() {
   }
 }
 
-function attachmentLabel(file) {
-  if (!file) {
-    return "Файл для администратора не выбран";
-  }
-  const sizeKb = Math.max(1, Math.round(file.size / 1024));
-  return `${file.name} · ${sizeKb} КБ`;
-}
-
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -250,60 +335,124 @@ function fileToBase64(file) {
   });
 }
 
-requestFileInput?.addEventListener("change", async () => {
-  const file = requestFileInput.files?.[0] || null;
-  if (!file) {
-    pendingRequestAttachment = null;
-    if (requestAttachmentName) {
-      requestAttachmentName.textContent = attachmentLabel(null);
-    }
+function formatRequestFileSize(file) {
+  return `${Math.max(1, Math.round(file.size / 1024))} КБ`;
+}
+
+function renderRequestAttachments() {
+  if (!requestAttachmentsList) {
     return;
   }
-  if (requestAttachmentName) {
-    requestAttachmentName.textContent = "Подготавливаю файл...";
+  requestAttachmentsList.replaceChildren();
+  if (!selectedRequestFiles.length) {
+    const emptyLabel = document.createElement("span");
+    emptyLabel.className = "attachment-name";
+    emptyLabel.textContent = "Файлы не выбраны";
+    requestAttachmentsList.appendChild(emptyLabel);
+    return;
   }
-  try {
-    pendingRequestAttachment = await fileToBase64(file);
-    if (requestAttachmentName) {
-      requestAttachmentName.textContent = attachmentLabel(file);
+  selectedRequestFiles.forEach(({ id, file }) => {
+    const row = document.createElement("div");
+    row.className = "request-attachment-item";
+    const details = document.createElement("span");
+    details.className = "request-attachment-details";
+    details.textContent = `${file.name} · ${formatRequestFileSize(file)}`;
+    const removeButton = document.createElement("button");
+    removeButton.className = "request-attachment-remove";
+    removeButton.type = "button";
+    removeButton.dataset.fileId = String(id);
+    removeButton.setAttribute("aria-label", `Удалить файл ${file.name}`);
+    removeButton.textContent = "Удалить";
+    row.append(details, removeButton);
+    requestAttachmentsList.appendChild(row);
+  });
+}
+
+requestFileInput?.addEventListener("change", () => {
+  const files = Array.from(requestFileInput.files || []);
+  const errors = [];
+  files.forEach((file) => {
+    if (file.size > maxRequestFileSize) {
+      errors.push(`«${file.name}» больше 5 МБ`);
+      return;
     }
-    setStatus(requestStatusBox, "");
-  } catch (error) {
-    pendingRequestAttachment = null;
-    requestFileInput.value = "";
-    if (requestAttachmentName) {
-      requestAttachmentName.textContent = attachmentLabel(null);
+    const duplicate = selectedRequestFiles.some((entry) =>
+      entry.file.name === file.name && entry.file.size === file.size && entry.file.lastModified === file.lastModified
+    );
+    if (duplicate) {
+      return;
     }
-    setStatus(requestStatusBox, error instanceof Error ? error.message : "Ошибка подготовки файла.", true);
+    if (selectedRequestFiles.length >= maxRequestFileCount) {
+      errors.push("Можно приложить не больше 10 файлов");
+      return;
+    }
+    const currentSize = selectedRequestFiles.reduce((total, entry) => total + entry.file.size, 0);
+    if (currentSize + file.size > maxRequestFilesSize) {
+      errors.push("Общий размер файлов не должен превышать 25 МБ");
+      return;
+    }
+    selectedRequestFiles.push({ id: nextRequestFileId++, file });
+  });
+  requestFileInput.value = "";
+  renderRequestAttachments();
+  setStatus(requestStatusBox, errors.length ? errors.join(". ") : "");
+});
+
+requestAttachmentsList?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
   }
+  const removeButton = target.closest(".request-attachment-remove");
+  if (!removeButton) {
+    return;
+  }
+  const fileId = Number(removeButton.dataset.fileId);
+  selectedRequestFiles = selectedRequestFiles.filter((entry) => entry.id !== fileId);
+  renderRequestAttachments();
 });
 
 requestForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!currentUser) {
+    setStatus(requestStatusBox, "Сначала войдите или создайте аккаунт в этом разделе.", true);
+    requestAuthBox?.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
   try {
+    if (requestActionButton) {
+      requestActionButton.disabled = true;
+    }
+    setStatus(requestStatusBox, selectedRequestFiles.length ? "Подготавливаю файлы и отправляю заявку..." : "Отправляю заявку...");
     const formData = new FormData(requestForm);
     const payload = Object.fromEntries(formData.entries());
     delete payload.attachmentFile;
-    if (pendingRequestAttachment) {
-      payload.attachment = pendingRequestAttachment;
+    delete payload.authEmail;
+    delete payload.authPassword;
+    if (selectedRequestFiles.length) {
+      payload.attachments = await Promise.all(selectedRequestFiles.map(({ file }) => fileToBase64(file)));
     }
-    setStatus(requestStatusBox, currentUser ? "Отправляю заявку в чат..." : "Создаю аккаунт и отправляю заявку в чат...");
+    if (requestActionButton) {
+      requestActionButton.textContent = "Отправляю заявку...";
+    }
+    setStatus(requestStatusBox, "Отправляю заявку и открываю чат...");
     const result = await fetchJson("/api/requests", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
     requestForm.reset();
-    pendingRequestAttachment = null;
-    if (requestAttachmentName) {
-      requestAttachmentName.textContent = attachmentLabel(null);
-    }
+    selectedRequestFiles = [];
+    renderRequestAttachments();
     setStatus(requestStatusBox, result.message || "Заявка отправлена.");
-    window.setTimeout(() => {
-      window.location.href = result.redirectTo || "/chat";
-    }, 700);
+    window.location.assign(result.redirectTo || "/chat");
   } catch (error) {
     setStatus(requestStatusBox, error instanceof Error ? error.message : "Ошибка соединения.", true);
+  } finally {
+    if (requestActionButton) {
+      requestActionButton.disabled = false;
+      requestActionButton.textContent = currentUser ? "Отправить заявку и перейти в чат" : "Создать аккаунт";
+    }
   }
 });
 
