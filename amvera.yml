@@ -3,8 +3,6 @@ meta:
   toolchain:
     name: pip
     version: 3.11
-build:
-  requirementsPath: requirements.txt
 run:
   command: python server.py
   persistence:
