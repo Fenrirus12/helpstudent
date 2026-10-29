@@ -1,4 +1,3 @@
----
 meta:
   environment: python
   toolchain:
@@ -6,12 +5,8 @@ meta:
     version: 3.11
 build:
   requirementsPath: requirements.txt
-  useCache: true
 run:
-  scriptName: null
   command: python server.py
-  persistenceMount: /data
-  containerPort: 80
-  russianTrustedCa: false
-  singleton: true
-  zeroDowntime: false
+  persistence:
+    - /data
+    - /uploads
