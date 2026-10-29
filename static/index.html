@@ -411,7 +411,24 @@
             </label>
             <label>
               Когда нужен результат?
-              <input type="date" name="deadline" required disabled>
+              <div class="request-date-picker" id="request-date-picker">
+                <div class="request-date-control">
+                  <input id="deadline-display" type="text" placeholder="Выберите дату" aria-label="Выбранный срок" aria-haspopup="dialog" aria-expanded="false" readonly required disabled>
+                  <input id="deadline-value" type="hidden" name="deadline" disabled>
+                  <button id="deadline-open" class="request-date-open" type="button" aria-label="Открыть календарь" aria-haspopup="dialog" aria-expanded="false" disabled>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2v2H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7Zm12 17H5V9h14v10ZM5 7V6h2v1h2V6h6v1h2V6h2v1H5Z"/></svg>
+                  </button>
+                </div>
+                <div class="request-calendar-popover" id="request-calendar-popover" role="dialog" aria-label="Выбор даты дедлайна" hidden>
+                  <div class="request-calendar-head">
+                    <button class="request-calendar-nav" id="request-calendar-prev" type="button" aria-label="Предыдущий месяц">‹</button>
+                    <strong id="request-calendar-month"></strong>
+                    <button class="request-calendar-nav" id="request-calendar-next" type="button" aria-label="Следующий месяц">›</button>
+                  </div>
+                  <div class="request-calendar-weekdays" aria-hidden="true"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div>
+                  <div class="request-calendar-days" id="request-calendar-days"></div>
+                </div>
+              </div>
             </label>
             <label class="request-file-field">
               Материалы (по желанию)

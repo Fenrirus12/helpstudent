@@ -51,6 +51,14 @@
             <p class="admin-sidebar-text">Выберите пользователя, чтобы увидеть историю сообщений и ответить ему.</p>
             <button class="button button-secondary" id="refresh-chat-list-button" type="button">Обновить список</button>
           </div>
+          <div class="chat-list-tools">
+            <label class="chat-search-field">
+              <span>Найти пользователя</span>
+              <input id="chat-list-search" type="search" placeholder="Имя, почта, сообщение">
+            </label>
+            <label class="chat-unread-filter"><input id="chat-unread-only" type="checkbox"> Только непрочитанные</label>
+            <p class="chat-list-count" id="chat-list-count" aria-live="polite"></p>
+          </div>
           <div class="chat-user-list" id="chat-user-list">
             <div class="chat-empty">Чаты появятся после авторизации администратора.</div>
           </div>
@@ -63,6 +71,19 @@
               <h2 id="chat-admin-title">Выберите пользователя</h2>
               <p class="admin-panel-subtitle" id="chat-admin-subtitle">Пока диалог не выбран.</p>
             </div>
+            <button class="button button-secondary chat-back-button" id="chat-back-button" type="button">К диалогам</button>
+          </div>
+          <div class="chat-history-tools">
+            <label class="chat-search-field">
+              <span>Поиск в переписке</span>
+              <input id="admin-message-search" type="search" placeholder="Текст или название файла">
+            </label>
+            <div class="chat-search-navigation">
+              <span class="chat-search-count" id="admin-search-count" aria-live="polite"></span>
+              <button class="button button-secondary" id="admin-search-prev" type="button" aria-label="Предыдущее совпадение">↑</button>
+              <button class="button button-secondary" id="admin-search-next" type="button" aria-label="Следующее совпадение">↓</button>
+              <button class="button button-secondary" id="admin-latest-button" type="button">К последним</button>
+            </div>
           </div>
           <div class="chat-messages chat-messages-admin" id="admin-chat-messages">
             <div class="chat-empty">Сообщения появятся после выбора пользователя.</div>
@@ -70,7 +91,7 @@
           <form class="chat-form is-hidden" id="admin-chat-form">
             <div class="chat-compose-row">
               <label class="attachment-button" for="admin-chat-file-input" title="Прикрепить файл">
-                <input id="admin-chat-file-input" type="file">
+                <input id="admin-chat-file-input" type="file" multiple aria-label="Выбрать файлы для ответа">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M16.5 6.5v8.75a4.25 4.25 0 1 1-8.5 0V5.75a2.75 2.75 0 0 1 5.5 0v8.5a1.25 1.25 0 1 1-2.5 0V7h-1.5v7.25a2.75 2.75 0 1 0 5.5 0v-8.5a4.25 4.25 0 0 0-8.5 0v9.5a5.75 5.75 0 1 0 11.5 0V6.5h-1.5Z"/>
                 </svg>
@@ -78,7 +99,8 @@
               <textarea name="text" rows="4" placeholder="Ответ пользователю"></textarea>
             </div>
             <div class="chat-compose-meta">
-              <span class="attachment-name" id="admin-attachment-name">Файл не выбран</span>
+              <div class="chat-attachments-list" id="admin-pending-files" aria-live="polite"></div>
+              <span class="chat-file-hint">До 10 файлов · до 5 МБ каждый · до 25 МБ суммарно</span>
               <button class="button button-primary" type="submit">Отправить ответ</button>
             </div>
           </form>
@@ -88,6 +110,7 @@
     </main>
   </div>
 
+  <script src="/chat-attachments.js"></script>
   <script src="/admin-chats.js"></script>
 </body>
 </html>

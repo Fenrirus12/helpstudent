@@ -120,6 +120,7 @@ class Storage:
                     attachment_content_type TEXT,
                     attachment_path TEXT,
                     attachment_size INTEGER,
+                    attachments_json TEXT,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS password_resets (
@@ -154,6 +155,9 @@ class Storage:
                 );
                 """
             )
+            message_columns = {row["name"] for row in connection.execute("PRAGMA table_info(messages)")}
+            if "attachments_json" not in message_columns:
+                connection.execute("ALTER TABLE messages ADD COLUMN attachments_json TEXT")
 
     def _load_json_list(self, file_path: Path) -> list[dict]:
         try:
@@ -255,9 +259,10 @@ class Storage:
                     """
                     INSERT OR IGNORE INTO messages (
                         id, user_id, sender, text, created_at, read_by_admin, read_by_user,
-                        attachment_name, attachment_content_type, attachment_path, attachment_size
+                        attachment_name, attachment_content_type, attachment_path, attachment_size,
+                        attachments_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(item.get("id", 0)),
@@ -271,6 +276,7 @@ class Storage:
                         attachment.get("contentType"),
                         attachment.get("path"),
                         attachment.get("size"),
+                        json.dumps([attachment], ensure_ascii=False) if attachment else None,
                     ),
                 )
 
@@ -552,16 +558,24 @@ class Storage:
             )
             return True, 0
 
-    def create_message(self, user_id: int, sender: str, text: str, attachment: dict | None = None) -> dict:
+    def create_message(self, user_id: int, sender: str, text: str, attachments: dict | list[dict] | None = None) -> dict:
         created_at = to_iso(utcnow())
+        if isinstance(attachments, dict):
+            attachment_items = [attachments]
+        elif isinstance(attachments, list):
+            attachment_items = [item for item in attachments if isinstance(item, dict)]
+        else:
+            attachment_items = []
+        first_attachment = attachment_items[0] if attachment_items else None
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO messages (
                     user_id, sender, text, created_at, read_by_admin, read_by_user,
-                    attachment_name, attachment_content_type, attachment_path, attachment_size
+                    attachment_name, attachment_content_type, attachment_path, attachment_size,
+                    attachments_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -570,10 +584,11 @@ class Storage:
                     created_at,
                     1 if sender == "admin" else 0,
                     1 if sender == "user" else 0,
-                    attachment.get("name") if attachment else None,
-                    attachment.get("contentType") if attachment else None,
-                    attachment.get("path") if attachment else None,
-                    attachment.get("size") if attachment else None,
+                    first_attachment.get("name") if first_attachment else None,
+                    first_attachment.get("contentType") if first_attachment else None,
+                    first_attachment.get("path") if first_attachment else None,
+                    first_attachment.get("size") if first_attachment else None,
+                    json.dumps(attachment_items, ensure_ascii=False) if attachment_items else None,
                 ),
             )
             message_id = int(cursor.lastrowid)
@@ -584,7 +599,7 @@ class Storage:
             row = connection.execute(
                 """
                 SELECT id, user_id, sender, text, created_at, read_by_admin, read_by_user,
-                       attachment_name, attachment_content_type, attachment_path, attachment_size
+                       attachment_name, attachment_content_type, attachment_path, attachment_size, attachments_json
                 FROM messages
                 WHERE id = ?
                 """,
@@ -597,7 +612,7 @@ class Storage:
             rows = connection.execute(
                 """
                 SELECT id, user_id, sender, text, created_at, read_by_admin, read_by_user,
-                       attachment_name, attachment_content_type, attachment_path, attachment_size
+                       attachment_name, attachment_content_type, attachment_path, attachment_size, attachments_json
                 FROM messages
                 WHERE user_id = ?
                 ORDER BY id ASC
@@ -605,6 +620,33 @@ class Storage:
                 (user_id,),
             ).fetchall()
         return [self._message_row_to_dict(row) for row in rows if row]
+
+    def delete_message(self, message_id: int, user_id: int, sender: str | None = None) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT id, user_id, sender, text, created_at, read_by_admin, read_by_user,
+                          attachment_name, attachment_content_type, attachment_path, attachment_size, attachments_json
+                   FROM messages WHERE id = ? AND user_id = ?""",
+                (message_id, user_id),
+            ).fetchone()
+            if row is None or (sender is not None and row["sender"] != sender):
+                return None
+            item = self._message_row_to_dict(row)
+            connection.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+        return item
+
+    def attachment_is_referenced(self, path: str) -> bool:
+        with self._connect() as connection:
+            message = connection.execute(
+                "SELECT 1 FROM messages WHERE attachment_path = ? OR attachments_json LIKE ? LIMIT 1",
+                (path, f"%{path}%"),
+            ).fetchone()
+            if message:
+                return True
+            record = connection.execute(
+                "SELECT 1 FROM app_records WHERE payload LIKE ? LIMIT 1", (f"%{path}%",)
+            ).fetchone()
+        return record is not None
 
     def mark_messages_read(self, user_id: int, reader: str) -> None:
         with self._connect() as connection:
@@ -637,7 +679,7 @@ class Storage:
                 message_row = connection.execute(
                     """
                     SELECT id, user_id, sender, text, created_at, read_by_admin, read_by_user,
-                           attachment_name, attachment_content_type, attachment_path, attachment_size
+                           attachment_name, attachment_content_type, attachment_path, attachment_size, attachments_json
                     FROM messages
                     WHERE user_id = ?
                     ORDER BY id DESC
@@ -691,11 +733,21 @@ class Storage:
             "readByAdmin": bool(row["read_by_admin"]),
             "readByUser": bool(row["read_by_user"]),
         }
-        if row["attachment_path"] and row["attachment_name"]:
-            item["attachment"] = {
+        attachments = []
+        if row["attachments_json"]:
+            try:
+                value = json.loads(row["attachments_json"])
+                attachments = [attachment for attachment in value if isinstance(attachment, dict)] if isinstance(value, list) else []
+            except json.JSONDecodeError:
+                attachments = []
+        if not attachments and row["attachment_path"] and row["attachment_name"]:
+            attachments = [{
                 "name": row["attachment_name"],
                 "contentType": row["attachment_content_type"],
                 "path": row["attachment_path"],
                 "size": row["attachment_size"],
-            }
+            }]
+        if attachments:
+            item["attachments"] = attachments
+            item["attachment"] = attachments[0]
         return item

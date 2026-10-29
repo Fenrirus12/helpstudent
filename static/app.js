@@ -11,6 +11,13 @@ const requestAuthHelp = document.querySelector("#request-auth-help");
 const requestAuthNameLabel = document.querySelector("#request-auth-name-label");
 const requestFileInput = document.querySelector("#request-file-input");
 const requestAttachmentsList = document.querySelector("#request-attachments-list");
+const deadlineDisplay = document.querySelector("#deadline-display");
+const deadlineValue = document.querySelector("#deadline-value");
+const deadlinePicker = document.querySelector("#request-date-picker");
+const deadlinePopover = document.querySelector("#request-calendar-popover");
+const deadlineOpenButton = document.querySelector("#deadline-open");
+const deadlineMonthLabel = document.querySelector("#request-calendar-month");
+const deadlineDays = document.querySelector("#request-calendar-days");
 const reviewForm = document.querySelector("#review-form");
 const reviewStatusBox = document.querySelector("#review-status");
 const reviewsList = document.querySelector("#reviews-list");
@@ -36,11 +43,93 @@ const profileMenu = document.querySelector("#profile-menu");
 const openChangePasswordButton = document.querySelector("#open-change-password-button");
 const logoutButton = document.querySelector("#logout-button");
 let currentUser = null;
+let deadlineMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 let selectedRequestFiles = [];
 let nextRequestFileId = 1;
 const maxRequestFileCount = 10;
 const maxRequestFileSize = 5 * 1024 * 1024;
 const maxRequestFilesSize = 25 * 1024 * 1024;
+
+function dateKey(date) {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function closeDeadlinePicker() {
+  if (deadlinePopover) deadlinePopover.hidden = true;
+  deadlineDisplay?.setAttribute("aria-expanded", "false");
+  deadlineOpenButton?.setAttribute("aria-expanded", "false");
+}
+
+function renderDeadlineCalendar() {
+  if (!deadlineMonthLabel || !deadlineDays) return;
+  deadlineMonthLabel.textContent = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(deadlineMonth);
+  deadlineDays.replaceChildren();
+  const first = new Date(deadlineMonth.getFullYear(), deadlineMonth.getMonth(), 1);
+  const offset = (first.getDay() + 6) % 7;
+  const start = new Date(first.getFullYear(), first.getMonth(), 1 - offset);
+  const today = dateKey(new Date());
+  for (let index = 0; index < 42; index += 1) {
+    const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index);
+    const key = dateKey(day);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "request-calendar-day";
+    if (day.getMonth() !== deadlineMonth.getMonth()) button.classList.add("is-outside");
+    if (key === today) button.classList.add("is-today");
+    if (key === deadlineValue?.value) button.classList.add("is-selected");
+    button.textContent = String(day.getDate());
+    button.setAttribute("aria-label", new Intl.DateTimeFormat("ru-RU", { dateStyle: "full" }).format(new Date(`${key}T12:00:00`)));
+    button.setAttribute("aria-pressed", String(key === deadlineValue?.value));
+    button.addEventListener("click", () => {
+      if (deadlineValue) deadlineValue.value = key;
+      if (deadlineDisplay) deadlineDisplay.value = new Intl.DateTimeFormat("ru-RU", { dateStyle: "long" }).format(new Date(`${key}T12:00:00`));
+      closeDeadlinePicker();
+      deadlineOpenButton?.focus();
+    });
+    deadlineDays.appendChild(button);
+  }
+}
+
+function openDeadlinePicker() {
+  if (!deadlinePopover || deadlineDisplay?.disabled) return;
+  if (deadlineValue?.value) {
+    const [year, month] = deadlineValue.value.split("-").map(Number);
+    deadlineMonth = new Date(year, month - 1, 1);
+  }
+  renderDeadlineCalendar();
+  deadlinePopover.hidden = false;
+  deadlineDisplay?.setAttribute("aria-expanded", "true");
+  deadlineOpenButton?.setAttribute("aria-expanded", "true");
+}
+
+document.querySelector("#request-calendar-prev")?.addEventListener("click", () => {
+  deadlineMonth = new Date(deadlineMonth.getFullYear(), deadlineMonth.getMonth() - 1, 1);
+  renderDeadlineCalendar();
+});
+
+document.querySelector("#request-calendar-next")?.addEventListener("click", () => {
+  deadlineMonth = new Date(deadlineMonth.getFullYear(), deadlineMonth.getMonth() + 1, 1);
+  renderDeadlineCalendar();
+});
+
+deadlineDisplay?.addEventListener("click", openDeadlinePicker);
+deadlineDisplay?.addEventListener("focus", openDeadlinePicker);
+deadlineOpenButton?.addEventListener("click", () => {
+  if (deadlinePopover?.hidden) openDeadlinePicker();
+  else closeDeadlinePicker();
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (deadlinePicker && event.target instanceof Node && !deadlinePicker.contains(event.target)) closeDeadlinePicker();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && deadlinePopover && !deadlinePopover.hidden) closeDeadlinePicker();
+});
+
+renderDeadlineCalendar();
 
 if (menuToggle && siteNav) {
   menuToggle.addEventListener("click", () => {
@@ -98,10 +187,12 @@ function syncHeaderAuth(user) {
       input.required = !isAuthorized;
     });
   });
+  if (deadlineOpenButton) deadlineOpenButton.disabled = !isAuthorized;
+  closeDeadlinePicker();
   requestAuthBox?.querySelectorAll("input").forEach((input) => {
     input.required = !isAuthorized && (input.name !== "authName" || requestAuthBox?.dataset.authMode !== "login");
   });
-  requestForm?.querySelectorAll("[name=\"name\"], [name=\"contact\"], [name=\"taskType\"], [name=\"antiPlagiarism\"], [name=\"deadline\"], [name=\"attachmentFile\"], [name=\"details\"]").forEach((field) => {
+  requestForm?.querySelectorAll("[name=\"name\"], [name=\"contact\"], [name=\"taskType\"], [name=\"antiPlagiarism\"], [name=\"deadline\"], #deadline-display, [name=\"attachmentFile\"], [name=\"details\"]").forEach((field) => {
     if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement) {
       field.disabled = !isAuthorized;
     }

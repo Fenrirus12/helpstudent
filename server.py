@@ -284,7 +284,7 @@ def create_handler(app: Application):
                 if payload is None:
                     return
                 text = str(payload.get("text", "")).strip()
-                attachment = payload.get("attachment")
+                attachment = payload.get("attachments", payload.get("attachment"))
                 if len(text) < 1 and not attachment:
                     self._send_json({"ok": False, "message": "Сообщение не может быть пустым."}, status=HTTPStatus.BAD_REQUEST)
                     return
@@ -308,7 +308,7 @@ def create_handler(app: Application):
                 if payload is None:
                     return
                 text = str(payload.get("text", "")).strip()
-                attachment = payload.get("attachment")
+                attachment = payload.get("attachments", payload.get("attachment"))
                 if len(text) < 1 and not attachment:
                     self._send_json({"ok": False, "message": "Сообщение не может быть пустым."}, status=HTTPStatus.BAD_REQUEST)
                     return
@@ -438,6 +438,36 @@ def create_handler(app: Application):
         def do_DELETE(self) -> None:
             self._response_sent = False
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/chat/messages/"):
+                user = self._require_user()
+                if self._response_sent or user is None:
+                    return
+                message_id_raw = parsed.path.removeprefix("/api/chat/messages/").strip("/")
+                if not message_id_raw.isdigit():
+                    self._send_json({"ok": False, "message": "Некорректный идентификатор сообщения."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                deleted = app.chat.delete_message(int(message_id_raw), int(user["id"]), "user")
+                if deleted is None:
+                    self._send_json({"ok": False, "message": "Можно удалить только своё сообщение."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self._send_json({"ok": True, "message": "Сообщение удалено."})
+                return
+
+            if parsed.path.startswith("/api/admin/chats/") and "/messages/" in parsed.path:
+                self._require_admin()
+                if self._response_sent:
+                    return
+                parts = parsed.path.strip("/").split("/")
+                if len(parts) != 6 or not parts[3].isdigit() or not parts[5].isdigit() or parts[4] != "messages":
+                    self._send_json({"ok": False, "message": "Некорректный адрес сообщения."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                deleted = app.chat.delete_message(int(parts[5]), int(parts[3]), "admin")
+                if deleted is None:
+                    self._send_json({"ok": False, "message": "Можно удалить только своё сообщение."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self._send_json({"ok": True, "message": "Сообщение удалено."})
+                return
+
             if parsed.path.startswith("/api/admin/works/"):
                 self._require_admin()
                 if self._response_sent:
