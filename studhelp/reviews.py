@@ -62,6 +62,7 @@ class ReviewService:
         record = {
             "id": self.storage.next_json_id(entries),
             "createdAt": datetime.now(timezone.utc).isoformat(),
+            "status": "active",
             **payload,
         }
         entries.append(record)
@@ -88,6 +89,17 @@ class ReviewService:
             return None
         self.storage.write_requests(remaining)
         return deleted
+
+    def calendar_requests(self) -> list[dict]:
+        return [
+            item for item in self.storage.load_requests()
+            if str(item.get("status", "active")) == "active" and safe_date(str(item.get("deadline", "")))
+        ]
+
+    def set_request_status(self, request_id: int, status: str) -> dict | None:
+        if status not in {"active", "completed"}:
+            return None
+        return self.storage.set_request_status(request_id, status)
 
     def save_review(self, payload: dict) -> dict:
         entries = self.storage.load_reviews()

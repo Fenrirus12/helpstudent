@@ -32,17 +32,22 @@ class Settings:
     smtp_password: str = ""
     smtp_from: str = ""
     email_sender: Callable[[str, str], None] | None = field(default=None, repr=False)
+    legacy_data_dir: Path | None = None
 
     @classmethod
     def from_env(cls, root_dir: Path) -> "Settings":
-        data_dir = root_dir / "data"
+        default_data_dir = Path("/data") if Path("/data").is_dir() else root_dir / "data"
+        data_dir = Path(os.getenv("DATA_DIR", str(default_data_dir)))
+        default_uploads_dir = data_dir / "uploads" if data_dir != root_dir / "data" else root_dir / "uploads"
+        uploads_dir = Path(os.getenv("UPLOADS_DIR", str(default_uploads_dir)))
         smtp_username = os.getenv("SMTP_USERNAME", "")
         return cls(
             root_dir=root_dir,
             static_dir=root_dir / "static",
             data_dir=data_dir,
-            uploads_dir=root_dir / "uploads",
+            uploads_dir=uploads_dir,
             database_path=data_dir / "app.sqlite3",
+            legacy_data_dir=(root_dir / "data") if data_dir != root_dir / "data" else None,
             admin_username=os.getenv("ADMIN_USERNAME", "admin"),
             admin_password=os.getenv("ADMIN_PASSWORD", "change-me-please"),
             smtp_host=os.getenv("SMTP_HOST", ""),

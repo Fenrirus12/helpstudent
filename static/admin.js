@@ -22,8 +22,25 @@ const resetWorkFormButton = document.querySelector("#reset-work-form-button");
 const taskTypeFilter = document.querySelector("#task-type-filter");
 const reviewStatusFilter = document.querySelector("#review-status-filter");
 const counterNode = document.querySelector("#admin-counter");
+const calendarGrid = document.querySelector("#calendar-grid");
+const calendarLabel = document.querySelector("#calendar-month-label");
+const calendarOrders = document.querySelector("#calendar-day-orders");
+const calendarPrev = document.querySelector("#calendar-prev");
+const calendarNext = document.querySelector("#calendar-next");
+const downloadBackupButton = document.querySelector("#download-backup-button");
+const backupPanel = document.querySelector("#admin-backup-panel");
 let pendingWorkAttachment = null;
 let workAttachmentRead = null;
+let calendarItems = [];
+let calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+let selectedCalendarDay = localDateKey(new Date());
+
+function localDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 function setAdminStatus(message, isError = false) {
   if (!statusNode) {
@@ -68,6 +85,7 @@ function setAuthorizedState(isAuthorized) {
   if (sessionCard) {
     sessionCard.classList.toggle("is-hidden", !isAuthorized);
   }
+  backupPanel?.classList.toggle("is-hidden", !isAuthorized);
   if (sessionUsername) {
     sessionUsername.textContent = getStoredUser() || "admin";
   }
@@ -147,9 +165,13 @@ function renderRequests(items) {
           <strong>Заявка #${escapeHtml(item.id)}</strong>
           <span>${escapeHtml(formatDate(item.createdAt))}</span>
         </div>
-        <button class="button button-danger request-delete" type="button" data-request-id="${escapeHtml(item.id)}">Удалить</button>
+        <div class="admin-actions">
+          <button class="button button-secondary request-status-toggle" type="button" data-request-id="${escapeHtml(item.id)}" data-next-status="${item.status === "active" ? "completed" : "active"}">${item.status === "active" ? "Завершить" : "Вернуть в активные"}</button>
+          <button class="button button-danger request-delete" type="button" data-request-id="${escapeHtml(item.id)}">Удалить</button>
+        </div>
       </div>
       <div class="request-grid">
+        <p><span>Статус</span>${item.status === "active" ? "Активная" : "Завершённая"}</p>
         <p><span>Имя</span>${escapeHtml(item.name)}</p>
         <p><span>Контакт</span>${escapeHtml(item.contact)}</p>
         <p><span>Тип работы</span>${escapeHtml(item.taskType)}</p>
@@ -172,6 +194,58 @@ function renderRequests(items) {
     `;
     requestList.appendChild(card);
   });
+}
+
+function renderCalendar() {
+  if (!calendarGrid || !calendarLabel || !calendarOrders) return;
+  calendarLabel.textContent = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(calendarMonth);
+  const byDay = new Map();
+  calendarItems.forEach((item) => {
+    const key = String(item.deadline || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
+    byDay.set(key, [...(byDay.get(key) || []), item]);
+  });
+  calendarGrid.replaceChildren();
+  const first = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
+  const offset = (first.getDay() + 6) % 7;
+  const gridStart = new Date(first.getFullYear(), first.getMonth(), 1 - offset);
+  for (let index = 0; index < 42; index += 1) {
+    const day = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+    const key = localDateKey(day);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "calendar-day";
+    if (day.getMonth() !== calendarMonth.getMonth()) button.classList.add("is-outside");
+    if (key === selectedCalendarDay) button.classList.add("is-selected");
+    if (byDay.has(key)) button.classList.add("has-orders");
+    button.textContent = String(day.getDate());
+    button.setAttribute("aria-label", `${key}${byDay.has(key) ? `, заявок: ${byDay.get(key).length}` : ""}`);
+    button.addEventListener("click", () => {
+      selectedCalendarDay = key;
+      calendarMonth = new Date(day.getFullYear(), day.getMonth(), 1);
+      renderCalendar();
+    });
+    calendarGrid.appendChild(button);
+  }
+  const selected = byDay.get(selectedCalendarDay) || [];
+  calendarOrders.innerHTML = selected.length
+    ? `<strong>Заявки на ${escapeHtml(new Intl.DateTimeFormat("ru-RU", { dateStyle: "long" }).format(new Date(`${selectedCalendarDay}T12:00:00`)))}</strong>${selected.map((item) => `<div class="calendar-order"><div><strong>Заявка #${escapeHtml(item.id)} · ${escapeHtml(item.taskType || "")}</strong><br><span>${escapeHtml(item.name || "")} · ${escapeHtml(item.contact || "")}</span></div><button class="button button-secondary calendar-open-request" type="button" data-request-id="${escapeHtml(item.id)}">К заявке</button></div>`).join("")}`
+    : `<p class="admin-panel-subtitle">На выбранный день активных дедлайнов нет.</p>`;
+}
+
+async function loadCalendar() {
+  if (!getStoredAuth()) {
+    calendarItems = [];
+    renderCalendar();
+    return;
+  }
+  try {
+    const result = await fetchAdminJson("/api/admin/calendar");
+    calendarItems = result.items || [];
+    renderCalendar();
+  } catch (error) {
+    setAdminStatus(error instanceof Error ? error.message : "Не удалось загрузить календарь.", true);
+  }
 }
 
 function renderAdminReviews(items) {
@@ -369,8 +443,53 @@ async function deleteRequest(requestId) {
     const result = await fetchAdminJson(`/api/requests/${requestId}`, { method: "DELETE" });
     setAdminStatus(result.message);
     await loadRequests();
+    await loadCalendar();
   } catch (error) {
     setAdminStatus(error instanceof Error ? error.message : "Ошибка соединения.", true);
+  }
+}
+
+async function updateRequestStatus(requestId, status) {
+  const label = status === "active" ? "Вернуть заявку в активные?" : "Отметить заявку как завершённую?";
+  if (!window.confirm(label)) return;
+  try {
+    const result = await fetchAdminJson(`/api/requests/${requestId}/status`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    setAdminStatus(result.message);
+    await Promise.all([loadRequests(), loadCalendar()]);
+  } catch (error) {
+    setAdminStatus(error instanceof Error ? error.message : "Не удалось изменить статус заявки.", true);
+  }
+}
+
+async function downloadDatabaseBackup() {
+  if (!getStoredAuth()) {
+    setAdminStatus("Сначала выполните вход.", true);
+    return;
+  }
+  try {
+    const response = await fetch("/api/admin/database-backup", {
+      headers: { Authorization: `Basic ${getStoredAuth()}` },
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.message || "Не удалось скачать резервную копию.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "helpstudent-backup.sqlite3";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setAdminStatus("Резервная копия базы данных скачана.");
+  } catch (error) {
+    setAdminStatus(error instanceof Error ? error.message : "Ошибка скачивания базы.", true);
   }
 }
 
@@ -611,6 +730,7 @@ if (loginForm) {
     await loadRequests();
     await loadAdminReviews();
     await loadAdminWorks();
+    await loadCalendar();
   });
 }
 
@@ -663,8 +783,21 @@ if (changeUserButton) {
 if (refreshButton) {
   refreshButton.addEventListener("click", () => {
     loadRequests();
+    loadCalendar();
   });
 }
+
+calendarPrev?.addEventListener("click", () => {
+  calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1);
+  renderCalendar();
+});
+
+calendarNext?.addEventListener("click", () => {
+  calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1);
+  renderCalendar();
+});
+
+downloadBackupButton?.addEventListener("click", downloadDatabaseBackup);
 
 if (refreshReviewsButton) {
   refreshReviewsButton.addEventListener("click", () => {
@@ -742,15 +875,32 @@ if (requestList) {
       return;
     }
     const button = target.closest(".request-delete");
-    if (!button) {
+    if (button) {
+      const requestId = button.getAttribute("data-request-id");
+      if (requestId) deleteRequest(requestId);
       return;
     }
-    const requestId = button.getAttribute("data-request-id");
-    if (requestId) {
-      deleteRequest(requestId);
+    const statusButton = target.closest(".request-status-toggle");
+    if (statusButton) {
+      const requestId = statusButton.getAttribute("data-request-id");
+      const nextStatus = statusButton.getAttribute("data-next-status");
+      if (requestId && nextStatus) updateRequestStatus(requestId, nextStatus);
     }
   });
 }
+
+calendarOrders?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const button = target.closest(".calendar-open-request");
+  const requestId = button?.getAttribute("data-request-id");
+  if (!requestId) return;
+  const card = [...(requestList?.querySelectorAll(".request-card") || [])]
+    .find((item) => item.querySelector(`[data-request-id="${CSS.escape(requestId)}"]`));
+  card?.scrollIntoView({ behavior: "smooth", block: "center" });
+  card?.classList.add("calendar-request-highlight");
+  window.setTimeout(() => card?.classList.remove("calendar-request-highlight"), 1800);
+});
 
 if (reviewAdminList) {
   reviewAdminList.addEventListener("click", (event) => {
@@ -826,3 +976,4 @@ setAuthorizedState(Boolean(getStoredAuth()));
 loadRequests();
 loadAdminReviews();
 loadAdminWorks();
+loadCalendar();

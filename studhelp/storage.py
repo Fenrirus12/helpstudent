@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
@@ -29,6 +31,7 @@ class Storage:
     def initialize(self) -> None:
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.settings.uploads_dir.mkdir(parents=True, exist_ok=True)
+        self._restore_legacy_uploads()
         for file_path, default in (
             (self.settings.data_dir / "requests.json", "[]"),
             (self.settings.data_dir / "reviews.json", "[]"),
@@ -40,13 +43,45 @@ class Storage:
         ):
             if not file_path.exists():
                 file_path.write_text(default, encoding="utf-8")
+        self._restore_legacy_database()
         self._initialize_database()
         self._migrate_legacy_json()
 
+    def _restore_legacy_database(self) -> None:
+        legacy_dir = self.settings.legacy_data_dir
+        if legacy_dir is None:
+            return
+        legacy_path = legacy_dir / "app.sqlite3"
+        if not legacy_path.exists() or self.settings.database_path.exists():
+            return
+        self.settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(legacy_path, timeout=10)) as source:
+            with closing(sqlite3.connect(self.settings.database_path, timeout=10)) as destination:
+                source.backup(destination)
+
+    def _restore_legacy_uploads(self) -> None:
+        legacy_dir = self.settings.legacy_data_dir
+        if legacy_dir is None:
+            return
+        legacy_uploads = legacy_dir.parent / "uploads"
+        if not legacy_uploads.is_dir() or legacy_uploads.resolve() == self.settings.uploads_dir.resolve():
+            return
+        for source in legacy_uploads.iterdir():
+            destination = self.settings.uploads_dir / source.name
+            if source.is_file() and not destination.exists():
+                shutil.copy2(source, destination)
+
+    def _legacy_file(self, name: str) -> Path:
+        legacy_dir = self.settings.legacy_data_dir
+        if legacy_dir is not None and (legacy_dir / name).exists():
+            return legacy_dir / name
+        return self.settings.data_dir / name
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.settings.database_path)
+        connection = sqlite3.connect(self.settings.database_path, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
         try:
             with connection:
                 yield connection
@@ -103,6 +138,20 @@ class Storage:
                     count INTEGER NOT NULL,
                     PRIMARY KEY(action, key)
                 );
+                CREATE TABLE IF NOT EXISTS app_records (
+                    collection TEXT NOT NULL,
+                    id INTEGER NOT NULL,
+                    payload TEXT NOT NULL,
+                    deadline TEXT,
+                    status TEXT,
+                    PRIMARY KEY(collection, id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_app_records_request_deadline
+                    ON app_records(collection, status, deadline);
+                CREATE TABLE IF NOT EXISTS storage_migrations (
+                    name TEXT PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -123,6 +172,20 @@ class Storage:
         return int(row["count"]) if row else 0
 
     def _migrate_legacy_json(self) -> None:
+        with self._connect() as connection:
+            migrated = connection.execute(
+                "SELECT 1 FROM storage_migrations WHERE name = 'legacy_json_to_sqlite'"
+            ).fetchone()
+        if migrated:
+            return
+        for collection in ("requests", "reviews", "works"):
+            if self._collection_count(collection) == 0:
+                entries = self._load_json_list(self._legacy_file(f"{collection}.json"))
+                if entries:
+                    if collection == "requests":
+                        for item in entries:
+                            item.setdefault("status", "active")
+                    self.write_collection(collection, entries)
         if self._table_count("users") == 0:
             self._migrate_users()
         if self._table_count("user_sessions") == 0:
@@ -131,9 +194,14 @@ class Storage:
             self._migrate_messages()
         if self._table_count("password_resets") == 0:
             self._migrate_password_resets()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO storage_migrations (name, applied_at) VALUES (?, ?)",
+                ("legacy_json_to_sqlite", to_iso(utcnow())),
+            )
 
     def _migrate_users(self) -> None:
-        items = self._load_json_list(self.settings.data_dir / "users.json")
+        items = self._load_json_list(self._legacy_file("users.json"))
         if not items:
             return
         with self._connect() as connection:
@@ -155,7 +223,7 @@ class Storage:
             )
 
     def _migrate_sessions(self) -> None:
-        items = self._load_json_list(self.settings.data_dir / "sessions.json")
+        items = self._load_json_list(self._legacy_file("sessions.json"))
         if not items:
             return
         with self._connect() as connection:
@@ -177,7 +245,7 @@ class Storage:
                 )
 
     def _migrate_messages(self) -> None:
-        items = self._load_json_list(self.settings.data_dir / "messages.json")
+        items = self._load_json_list(self._legacy_file("messages.json"))
         if not items:
             return
         with self._connect() as connection:
@@ -207,7 +275,7 @@ class Storage:
                 )
 
     def _migrate_password_resets(self) -> None:
-        items = self._load_json_list(self.settings.data_dir / "password_resets.json")
+        items = self._load_json_list(self._legacy_file("password_resets.json"))
         if not items:
             return
         with self._connect() as connection:
@@ -223,22 +291,86 @@ class Storage:
                 )
 
     def load_requests(self) -> list[dict]:
-        return self._load_json_list(self.settings.data_dir / "requests.json")
+        return self.load_collection("requests")
 
     def write_requests(self, entries: list[dict]) -> None:
-        self._write_json_list(self.settings.data_dir / "requests.json", entries)
+        self.write_collection("requests", entries)
 
     def load_reviews(self) -> list[dict]:
-        return self._load_json_list(self.settings.data_dir / "reviews.json")
+        return self.load_collection("reviews")
 
     def write_reviews(self, entries: list[dict]) -> None:
-        self._write_json_list(self.settings.data_dir / "reviews.json", entries)
+        self.write_collection("reviews", entries)
 
     def load_works(self) -> list[dict]:
-        return self._load_json_list(self.settings.data_dir / "works.json")
+        return self.load_collection("works")
 
     def write_works(self, entries: list[dict]) -> None:
-        self._write_json_list(self.settings.data_dir / "works.json", entries)
+        self.write_collection("works", entries)
+
+    def _collection_count(self, collection: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM app_records WHERE collection = ?", (collection,)
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def load_collection(self, collection: str) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM app_records WHERE collection = ? ORDER BY id", (collection,)
+            ).fetchall()
+        items = [json.loads(row["payload"]) for row in rows]
+        if collection == "requests":
+            for item in items:
+                item.setdefault("status", "active")
+        return items
+
+    def write_collection(self, collection: str, entries: list[dict]) -> None:
+        rows = []
+        for item in entries:
+            record = dict(item)
+            if collection == "requests":
+                record.setdefault("status", "active")
+            rows.append((
+                collection,
+                int(record.get("id", 0)),
+                json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+                str(record.get("deadline", "")) if collection == "requests" else None,
+                str(record.get("status", "active")) if collection == "requests" else None,
+            ))
+        with self._connect() as connection:
+            connection.execute("DELETE FROM app_records WHERE collection = ?", (collection,))
+            connection.executemany(
+                "INSERT INTO app_records (collection, id, payload, deadline, status) VALUES (?, ?, ?, ?, ?)",
+                rows,
+            )
+
+    def set_request_status(self, request_id: int, status: str) -> dict | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM app_records WHERE collection = 'requests' AND id = ?", (request_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            item = json.loads(row["payload"])
+            item["status"] = status
+            connection.execute(
+                "UPDATE app_records SET payload = ?, status = ? WHERE collection = 'requests' AND id = ?",
+                (json.dumps(item, ensure_ascii=False, separators=(",", ":")), status, request_id),
+            )
+        return item
+
+    def database_backup(self) -> bytes:
+        with tempfile.NamedTemporaryFile(prefix="helpstudent-backup-", suffix=".sqlite3", delete=False) as file:
+            backup_path = Path(file.name)
+        try:
+            with closing(sqlite3.connect(self.settings.database_path, timeout=10)) as source:
+                with closing(sqlite3.connect(backup_path, timeout=10)) as destination:
+                    source.backup(destination)
+            return backup_path.read_bytes()
+        finally:
+            backup_path.unlink(missing_ok=True)
 
     def next_json_id(self, entries: list[dict]) -> int:
         return max((int(item.get("id", 0)) for item in entries), default=0) + 1

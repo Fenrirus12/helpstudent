@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import sqlite3
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +58,31 @@ def create_handler(app: Application):
                 date_to = parse_iso_date(params.get("dateTo", [""])[0].strip()) if params.get("dateTo") else None
                 items = app.reviews.filter_requests(query, task_type, date_from, date_to)
                 self._send_json({"ok": True, "items": items})
+                return
+
+            if parsed.path == "/api/admin/calendar":
+                self._require_admin()
+                if self._response_sent:
+                    return
+                self._send_json({"ok": True, "items": app.reviews.calendar_requests()})
+                return
+
+            if parsed.path == "/api/admin/database-backup":
+                self._require_admin()
+                if self._response_sent:
+                    return
+                try:
+                    content = app.storage.database_backup()
+                except (OSError, sqlite3.Error) as error:
+                    self._send_json({"ok": False, "message": "Не удалось создать резервную копию базы."}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/vnd.sqlite3")
+                self.send_header("Content-Disposition", 'attachment; filename="helpstudent-backup.sqlite3"')
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                self._response_sent = True
                 return
 
             if parsed.path == "/api/reviews":
@@ -301,7 +327,8 @@ def create_handler(app: Application):
                 payload = self._read_json_body()
                 if payload is None:
                     return
-                errors = self._validate_request(payload)
+                current_user = app.auth.get_user_by_session(self._get_session_token())
+                errors = self._validate_request(payload, require_contact=current_user is None)
                 if errors:
                     self._send_json({"ok": False, "errors": errors}, status=HTTPStatus.BAD_REQUEST)
                     return
@@ -309,6 +336,8 @@ def create_handler(app: Application):
                 if auth_result is None:
                     return
                 user, token = auth_result
+                payload["name"] = str(payload.get("name", "")).strip() or user["name"]
+                payload["contact"] = str(payload.get("contact", "")).strip() or user["email"]
                 attachment_payloads = payload.pop("attachments", None)
                 legacy_attachment = payload.pop("attachment", None)
                 if attachment_payloads is None:
@@ -459,6 +488,24 @@ def create_handler(app: Application):
         def do_PUT(self) -> None:
             self._response_sent = False
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/requests/") and parsed.path.endswith("/status"):
+                self._require_admin()
+                if self._response_sent:
+                    return
+                request_id_raw = parsed.path.removeprefix("/api/requests/").removesuffix("/status").strip("/")
+                if not request_id_raw.isdigit():
+                    self._send_json({"ok": False, "message": "Некорректный идентификатор заявки."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                payload = self._read_json_body()
+                if payload is None:
+                    return
+                status = str(payload.get("status", ""))
+                updated = app.reviews.set_request_status(int(request_id_raw), status)
+                if updated is None:
+                    self._send_json({"ok": False, "message": "Заявка не найдена или указан неизвестный статус."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self._send_json({"ok": True, "item": updated, "message": f"Заявка #{request_id_raw} отмечена как {('активная' if status == 'active' else 'завершённая')}."})
+                return
             if parsed.path.startswith("/api/admin/works/"):
                 self._require_admin()
                 if self._response_sent:
@@ -703,20 +750,24 @@ def create_handler(app: Application):
             self.wfile.write(body)
             self._response_sent = True
 
-        def _validate_request(self, payload: dict) -> dict[str, str]:
+        def _validate_request(self, payload: dict, require_contact: bool = True) -> dict[str, str]:
             required_fields = {
-                "name": "Укажите имя.",
-                "contact": "Укажите способ связи.",
                 "taskType": "Выберите тип работы.",
                 "antiPlagiarism": "Выберите тип антиплагиата.",
                 "deadline": "Укажите срок.",
                 "details": "Опишите задачу.",
             }
+            if require_contact:
+                required_fields["name"] = "Укажите имя."
+                required_fields["contact"] = "Укажите способ связи."
             errors: dict[str, str] = {}
             for field, message in required_fields.items():
                 value = payload.get(field, "")
                 if not isinstance(value, str) or not value.strip():
                     errors[field] = message
+            deadline_value = str(payload.get("deadline", "")).strip()
+            if deadline_value and parse_iso_date(deadline_value) is None:
+                errors["deadline"] = "Выберите дату в календаре."
             details = str(payload.get("details", ""))
             if details and len(details.strip()) < 20:
                 errors["details"] = "Опишите задачу чуть подробнее, минимум 20 символов."

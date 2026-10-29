@@ -76,6 +76,13 @@
             </div>
           </section>
 
+          <section class="admin-session backup-panel is-hidden" id="admin-backup-panel">
+            <p class="eyebrow">Резервная копия</p>
+            <h2>База данных</h2>
+            <p class="admin-sidebar-text">Скачайте файл SQLite и храните его в надёжном месте.</p>
+            <button class="button button-secondary" id="download-backup-button" type="button">Скачать базу данных</button>
+          </section>
+
           <form class="admin-filters" id="filters-form">
             <div class="admin-panel-head">
               <div>
@@ -109,6 +116,25 @@
         </aside>
 
         <section class="admin-panel">
+          <section class="admin-calendar" aria-labelledby="calendar-title">
+            <div class="admin-panel-head admin-panel-head-wrap">
+              <div>
+                <p class="eyebrow">Сроки</p>
+                <h2 id="calendar-title">Календарь дедлайнов</h2>
+                <p class="admin-panel-subtitle">В календаре показаны активные заявки. Выберите день, чтобы посмотреть все сроки.</p>
+              </div>
+              <div class="calendar-controls">
+                <button class="button button-secondary" id="calendar-prev" type="button" aria-label="Предыдущий месяц">‹</button>
+                <strong id="calendar-month-label"></strong>
+                <button class="button button-secondary" id="calendar-next" type="button" aria-label="Следующий месяц">›</button>
+              </div>
+            </div>
+            <div class="calendar-weekdays" aria-hidden="true">
+              <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span>
+            </div>
+            <div class="calendar-grid" id="calendar-grid" aria-label="Дни месяца"></div>
+            <div class="calendar-day-orders" id="calendar-day-orders" aria-live="polite"></div>
+          </section>
           <div class="admin-panel-head admin-panel-head-wrap">
             <div>
               <p class="eyebrow">Заявки</p>

@@ -92,6 +92,12 @@ function syncHeaderAuth(user) {
   }
   headerSession?.classList.toggle("is-hidden", !isAuthorized);
   requestAuthBox?.classList.toggle("is-hidden", isAuthorized);
+  requestForm?.querySelectorAll(".request-contact-field").forEach((field) => {
+    field.classList.toggle("is-hidden", isAuthorized);
+    field.querySelectorAll("input").forEach((input) => {
+      input.required = !isAuthorized;
+    });
+  });
   requestAuthBox?.querySelectorAll("input").forEach((input) => {
     input.required = !isAuthorized && (input.name !== "authName" || requestAuthBox?.dataset.authMode !== "login");
   });
